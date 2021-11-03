@@ -1,0 +1,571 @@
+Description: "This will lauch EVERYTHING that you need to run a dedicated unity server on an amazon ec2 instance. This will generate the following: EC2 iam role, EC2 security group, autoscaling group, launch configuration with custom userdata, S3 Bucket, various automation lambdas, iam policies, and sns topic."
+
+Parameters:
+    LambdaRoute53RoleName:
+        Type: "String"
+        Description: "The name that will be applied to the LambdaRoute53Role that will be generated."
+        Default: "unity-lambda-trigger"
+        AllowedPattern: ".+"
+        ConstraintDescription: "LambdaRoute53RoleName is not allowed to be blank."
+    EC2ServerRoleName:
+        Type: "String"
+        Description: "The name that will be applied to the EC2ServerRole that will be generated."
+        Default: "unity-ec2-server"
+        AllowedPattern: ".+"
+        ConstraintDescription: "EC2ServerRoleName is not allowed to be blank."
+    ASGLifecycleRoleName:
+        Type: "String"
+        Description: "The name that will be applied to the ASGLifecycleRole that will be generated."
+        Default: "unity-asg-lifecycle"
+        AllowedPattern: ".+"
+        ConstraintDescription: "EC2ServerRoleName is not allowed to be blank."
+    S3ServerBucketName:
+        Type: "String"
+        Description: "The name of the S3 bucket that will be generated. The EC2 server will be able to pull any file from this bucket."
+        Default: "unity-ec2-server"
+        AllowedPattern: ".+"
+        ConstraintDescription: "S3ServerBucketName is not allowed to be blank."
+    EC2SecurityGroup:
+        Type: "String"
+        Description: "The name of the security group that will be applied to the ec2 server."
+        Default: "unity-ec2-server"
+        AllowedPattern: ".+"
+        ConstraintDescription: "EC2SecurityGroup is not allowed to be blank."
+    UnityServerPort:
+        Type: Number
+        Description: "The port your unity server is designed to start and listen on. (Defaults to the KCP transport default setting of 7777)"
+        Default: 7777
+        MaxValue: 65535
+        MinValue: 444
+        ConstraintDescription: "Requires a number between 3 and 5 in length"
+    UnityServerProtocol:
+        Type: String
+        Description: "The transport layers protocol that the server is using. (Defaults to KCP transport which runs on UDP)"
+        Default: udp
+        ConstraintDescription: "Requires udp or tcp"
+        AllowedPattern: "^(udp|tcp)"
+    CidrIPToAllowSSHPortAccess:
+        Type: String
+        Description: "The cidr range that you want to allow to the EC2 server. This needs to be your public IP. If not static you will need to constantly update this whenever you need to access this instance."
+        ConstraintDescription: Requires a /32 CIDR block
+        AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/(32))$"
+    LaunchInVPC:
+        Type: AWS::EC2::VPC::Id
+        Description: "The VPC you want to launch these resources into."
+    UseEC2Image:
+        Type: String
+        Description: "The name of the image that you want to launch with on your EC2 server."
+        Default: "amzn2-ami-hvm-2.0.*-x86_64-gp2"
+        AllowedPattern: ".+"
+    UseEC2ImageOwner:
+        Type: Number
+        Description: "The AWS Account Id that owns the image name that you're looking for."
+        Default: 137112412989
+    UseDetailedMonitoring:
+        Type: String
+        Default: "false"
+        AllowedValues:
+            - "true"
+            - "false"
+        Description: "(Costs extra) If you want to enable detailed monitoring on your EC2 instance that is launched."
+    EC2InstanceType:
+        Type: String
+        Description: "The instance type you want to launch with. The free tier (first year) is set by default. Anything else will cost more."
+        Default: t2.micro
+    SSHKeyName:
+        Type: AWS::EC2::KeyPair::KeyName
+        Description: "The name of the ssh key you created manually previously. If you haven't done this you need to go create on first then come back to this to continue."
+    AttachAdditionalBlockDevice:
+        Type: String
+        Description: "(Additional Cost) If you want to attach an additional block device to each spun up instance."
+        AllowedValues:
+            - "true"
+            - "false"
+        Default: "false"
+    BlockDeviceVolumeSize:
+        Type: Number
+        Description: "How big (in GB) you want the additional block device to be, if AttachAddtionalBlockDevice is true."
+        MinValue: 8
+        Default: 10
+    DesiredCapacity:
+        Type: Number
+        Description: "The number of EC2 instances to start right now."
+        Default: 1
+        MinValue: 0
+    MinCapacity:
+        Type: Number
+        Description: "The least number of EC2 instance to have running at any given time."
+        Default: 1
+        MinValue: 0
+    MaxCapacity:
+        Type: Number 
+        Description: "The maximum number of EC2 isntance to have running at any given time."
+        Default: 1
+    Route53HostedZoneToUpdate:
+        Type: AWS::Route53::HostedZone::Id
+        Description: "The hosted zone you want to update to attach to the newly spun up instances."
+    Route53RecordNameToUpdate:
+        Type: String
+        Description: "The DNS name that you want to automatically update to point to the newly spun up ec2 instance. If not supplied will not setup automatic route53 registration, NOTE: this automatic action is free, there is no additional cost for this."
+        Default: ""
+    LaunchInSubnets:
+        Type: List<AWS::EC2::Subnet::Id>
+        Description: List of subnets that you want to launch the instance into. These should be public subnets since this is setup to be a public ec2 server.
+    AZForEachSubnet:
+        Type: List<AWS::EC2::AvailabilityZone::Name>
+        Description: List of availability zones. These are the availability zones that should match the availability zones of the subnets in the LaunchInSubnets parameter.
+
+Conditions:
+    AttackBlockDevice:
+        !Equals [!Ref AttachAdditionalBlockDevice, true]
+    AutoRegisterToDNS:
+        !Not [
+            !Equals [!Ref Route53RecordNameToUpdate, ""]
+        ]
+
+Resources:
+    LambdaRoute53Role:
+        Condition: AutoRegisterToDNS
+        Type: AWS::IAM::Role
+        Properties:
+            Description: "This role will be assigned to the lambda that will be triggered everytime an ec2 instance scales up."
+            MaxSessionDuration: 3600
+            RoleName: !Ref LambdaRoute53RoleName
+            Path: "/"
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    - Action: sts:AssumeRole
+                      Effect: Allow
+                      Principal: 
+                        Service: 
+                            - lambda.amazonaws.com
+            Tags: 
+                - Key: Name
+                  Value: !Ref LambdaRoute53RoleName
+                - Key: Description
+                  Value: "This role will be assigned to the lambda that will be triggered everytime an ec2 instance scales up."
+                - Key: CloudFormation
+                  Value: !Ref AWS::StackName
+                - Key: LaunchRegion
+                  Value: !Ref AWS::Region
+    LambdaRoute53Policy:
+        Condition: AutoRegisterToDNS
+        Type: AWS::IAM::Policy
+        Properties:
+            PolicyDocument: 
+                Version: "2012-10-17"
+                Statement:
+                    - Sid: "UpdateTargetRoute53Records"
+                      Effect: "Allow"
+                      Action:
+                        - "route53:ChangeResourceRecordSets"
+                        - "route53:GetHostedZone"
+                        - "route53:ListResourceRecordSets"
+                      Resource:
+                        - !Join ["", ["arn:aws:route53:::hostedzone/", !Ref Route53HostedZoneToUpdate]]
+                    - Sid: "ListingHostedZones"
+                      Action:
+                        - "route53:ListHostedZones"
+                      Effect: "Allow"
+                      Resource:
+                        - "*"
+                    - Sid: "GetEC2InstanceIP"
+                      Effect: "Allow"
+                      Action: "ec2:DescribeInstances"
+                      Resource: "*"
+                    - Sid: "CreateLogEvents"
+                      Effect: "Allow"
+                      Action:
+                        - "logs:CreateLogStream"
+                        - "logs:PutLogEvents"
+                      Resource:
+                        - !Join ["", ["arn:aws:logs:", !Ref AWS::Region, ":", !Ref AWS::AccountId, ":log-group:/aws/lambda/", !Ref LambdaRoute53Register]]
+                        - !Join ["", ["arn:aws:logs:", !Ref AWS::Region, ":", !Ref AWS::AccountId, ":log-group:/aws/lambda/", !Ref LambdaRoute53Register, ":log-stream:*"]]
+            PolicyName: !Join [ "-", [!Ref LambdaRoute53RoleName, "policy" ]]
+            Roles:
+                - !Ref LambdaRoute53Role
+    EC2ServerProfile:
+        Type: AWS::IAM::InstanceProfile
+        Properties: 
+            InstanceProfileName: !Join ["", [!Ref EC2ServerRole, "-profile"]]
+            Path: "/"
+            Roles: 
+                - !Ref EC2ServerRole
+    EC2ServerRole:
+        Type: AWS::IAM::Role
+        Properties:
+            Description: "This is a locked down role that will be attached to the launched EC2 instances. This only allows getting target data from a target S3 bucket ONLY. It is not allowed to do anything else in your infrastructure."
+            MaxSessionDuration: 3600
+            RoleName: !Ref EC2ServerRoleName
+            Path: "/"
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    - Action: sts:AssumeRole
+                      Effect: Allow
+                      Principal: 
+                        Service: 
+                            - ec2.amazonaws.com
+            Tags: 
+                - Key: Name
+                  Value: !Ref EC2ServerRoleName
+                - Key: Description
+                  Value: "EC2 role to be attached to the spun up EC2 instances holding the unity server."
+                - Key: CloudFormation
+                  Value: !Ref AWS::StackName
+                - Key: LaunchRegion
+                  Value: !Ref AWS::Region
+    EC2ServerPolicy:
+        Type: AWS::IAM::Policy
+        Properties:
+            PolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    - Effect: "Allow"
+                      Action:
+                        - "s3:GetObject"
+                        - "s3:ListBucket"
+                      Resource:
+                        - !GetAtt ["ServerBucket", "Arn"]
+                        - !Join ["", [!GetAtt ["ServerBucket", "Arn"], "/*"]]
+            PolicyName: !Join [ "-", [!Ref EC2ServerRoleName, "policy" ]]
+            Roles:
+                - !Ref EC2ServerRole
+    ServerBucket:
+        Type: AWS::S3::Bucket
+        Properties: 
+          AccessControl: Private
+          BucketEncryption: 
+             ServerSideEncryptionConfiguration: 
+                - ServerSideEncryptionByDefault:
+                    SSEAlgorithm: AES256
+          BucketName: !Join ['-', [!Ref S3ServerBucketName, !Select [4, !Split ['-', !Select [2, !Split ['/', !Ref AWS::StackId]]]]]]
+          LifecycleConfiguration: 
+            Rules:
+                - Id: CostSavingMaintenance
+                  AbortIncompleteMultipartUpload:
+                    DaysAfterInitiation: 1
+                  Status: Enabled
+                  NoncurrentVersionTransitions:
+                    - StorageClass: ONEZONE_IA
+                      TransitionInDays: 30
+                    - StorageClass: GLACIER
+                      TransitionInDays: 60
+                  NoncurrentVersionExpirationInDays: 90
+          VersioningConfiguration:
+            Status: Enabled
+          PublicAccessBlockConfiguration:
+            BlockPublicAcls: true
+            BlockPublicPolicy: true
+            IgnorePublicAcls: true
+            RestrictPublicBuckets: true
+          Tags: 
+            - Key: "Name"
+              Value: !Ref S3ServerBucketName
+            - Key: "Description"
+              Value: "S3 bucket that the EC2Server has full access to pull from only."
+            - Key: "CloudFormation"
+              Value: !Ref AWS::StackName
+            - Key: "LaunchedRegion"
+              Value: !Ref AWS::Region
+    S3BucketLockdown:
+        Type: AWS::S3::BucketPolicy
+        Properties: 
+            Bucket: !Ref ServerBucket
+            PolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    - Sid: "DenyIncorrectEncryptionHeader"
+                      Effect: "Deny"
+                      Principal: "*"
+                      Action: 
+                        - "s3:PutObject"
+                      Resource: 
+                        - !Join ["", ["arn:aws:s3:::", !Ref ServerBucket, "/*"]]
+                      Condition:
+                        StringNotEquals:
+                            "s3:x-amz-server-side-encryption": "AES256"
+                    - Sid: "DenyUnEncryptedObjectUploads"
+                      Effect: "Deny"
+                      Principal: "*"
+                      Action: 
+                        - "s3:PutObject"
+                      Resource: 
+                        - !Join ["", ["arn:aws:s3:::", !Ref ServerBucket, "/*"]]
+                      Condition:
+                        "Null":
+                            "s3:x-amz-server-side-encryption": true          
+    EC2ServerSecurityGroup:
+        Type: AWS::EC2::SecurityGroup
+        Properties:
+            GroupDescription: "Unity EC2 Server security group."
+            GroupName: !Ref EC2SecurityGroup
+            SecurityGroupEgress: 
+                - CidrIp: 0.0.0.0/0
+                  FromPort: 443
+                  ToPort: 443
+                  IpProtocol: tcp
+                  Description: Allow YUM Updates
+                - CidrIp: 0.0.0.0/0
+                  FromPort: 80
+                  ToPort: 80
+                  IpProtocol: tcp
+                  Description: Allow YUM Updates
+            SecurityGroupIngress: 
+                - CidrIp: 0.0.0.0/0
+                  FromPort: !Ref UnityServerPort
+                  ToPort: !Ref UnityServerPort
+                  IpProtocol: !Ref UnityServerProtocol
+                  Description: "Unity Server Application Access"
+                - CidrIp: !Ref CidrIPToAllowSSHPortAccess
+                  FromPort: 22
+                  ToPort: 22
+                  IpProtocol: tcp
+                  Description: "Limited SSH Access - Maintenance"
+            Tags: 
+                - { Key: "Name", Value: !Ref EC2SecurityGroup}
+                - { Key: "Description", Value: "The security group that will be applied to the ec2 server instance." }
+                - { Key: "CloudFormation", Value: !Ref AWS::StackName }
+                - { Key: "LaunchedRegion", Value: !Ref AWS::Region }
+            VpcId: !Ref LaunchInVPC
+    CFNDescribeImagesRole:
+        Type: AWS::IAM::Role
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                    - Action: sts:AssumeRole
+                      Effect: Allow
+                      Principal: 
+                        Service: 
+                        - lambda.amazonaws.com
+            ManagedPolicyArns:
+                - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+            Policies:
+                - PolicyName: DescribeImages
+                  PolicyDocument:
+                    Version: "2012-10-17"
+                    Statement:
+                        - Action: ec2:DescribeImages
+                          Effect: Allow
+                          Resource: "*"
+    CFNGetLatestAMI:
+        Type: AWS::Lambda::Function
+        Properties:
+            Runtime: python3.6
+            Handler: index.handler
+            Role: !GetAtt ["CFNDescribeImagesRole","Arn"]
+            Timeout: 60
+            Code:
+                ZipFile: |
+                    import boto3
+                    import cfnresponse
+                    import json
+                    import traceback
+
+                    def handler(event, context):
+                        try:
+                            response = boto3.client('ec2').describe_images(
+                                Owners=[event['ResourceProperties']['Owner']],
+                                Filters=[
+                                    {'Name': 'name', 'Values': [event['ResourceProperties']['Name']]},
+                                    {'Name': 'architecture', 'Values': [event['ResourceProperties']['Architecture']]},
+                                    {'Name': 'root-device-type', 'Values': ['ebs']},
+                                ],
+                            )
+
+                            amis = sorted(response['Images'],
+                                        key=lambda x: x['CreationDate'],
+                                        reverse=True)
+                            id = amis[0]['ImageId']
+
+                            cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, id)
+                        except:
+                            traceback.print_last()
+                            cfnresponse.send(event, context, cfnresponse.FAIL, {}, "ok")
+    AL2AMI:
+        Type: Custom::FindAMI
+        Properties:
+            ServiceToken: !Sub ${CFNGetLatestAMI.Arn}
+            Owner: !Ref UseEC2ImageOwner
+            Name: !Ref UseEC2Image
+            Architecture: "x86_64"
+    LaunchConfig:
+        Type: AWS::AutoScaling::LaunchConfiguration
+        Properties:
+            AssociatePublicIpAddress: true
+            BlockDeviceMappings:
+                - Fn::If:
+                    - AttackBlockDevice
+                    - DeviceName: "/dev/xvdcz"
+                      Ebs:
+                        VolumeSize: !Ref BlockDeviceVolumeSize
+                        VolumeType: 'gp2'
+                    - !Ref AWS::NoValue
+            EbsOptimized: false
+            IamInstanceProfile: !Ref EC2ServerProfile
+            ImageId: !Ref AL2AMI
+            InstanceMonitoring: !Ref UseDetailedMonitoring
+            InstanceType: !Ref EC2InstanceType
+            KeyName: !Ref SSHKeyName
+            SecurityGroups:
+                - !Ref EC2ServerSecurityGroup
+            UserData:
+                Fn::Base64:
+                    !Join ["", [
+                        "#!/bin/bash -ex\n",
+                        "yum update -y\n",
+                        "cd ~\n",
+                        "aws s3 sync s3://",!Ref ServerBucket,"/ServerCode/ . --region ", !Ref AWS::Region,"\n",
+                        "chmod +x Server.x86_64\n",
+                        "./Server.x86_64 -batchmode -nographics -logFile ~/Server/Server.log\n"
+                    ]]
+    AutoScalingGroup:
+        Type: AWS::AutoScaling::AutoScalingGroup
+        Properties: 
+            AvailabilityZones: !Ref AZForEachSubnet
+            VPCZoneIdentifier: !Ref LaunchInSubnets
+            Cooldown: 300
+            DesiredCapacity: !Ref DesiredCapacity
+            HealthCheckGracePeriod: 300
+            HealthCheckType: EC2
+            LaunchConfigurationName: !Ref LaunchConfig
+            MaxSize: !Ref MaxCapacity
+            MinSize: !Ref MinCapacity
+            NotificationConfigurations:
+                Fn::If:
+                    - AutoRegisterToDNS
+                    - - NotificationTypes: [ autoscaling:EC2_INSTANCE_LAUNCH ]
+                        TopicARN: !Ref SNSRoute53RegisterTopic
+                    - - !Ref AWS::NoValue
+            Tags:
+                - Key: Name
+                  PropagateAtLaunch: true
+                  Value: unity-server
+                - Key: AMI
+                  PropagateAtLaunch: true
+                  Value: !Ref AL2AMI
+                - Key: CloudFormation
+                  PropagateAtLaunch: true
+                  Value: !Ref AWS::StackName
+                - Key: LaunchRegion
+                  PropagateAtLaunch: true
+                  Value: !Ref AWS::Region
+                - Key: Description
+                  PropagateAtLaunch: true
+                  Value: "The EC2 instance that is running the linux server that allows outside clients to connect to it in a secure fashion."
+                - Key: Unity
+                  PropagateAtLaunch: true
+                  Value: Server
+    SNSRoute53RegisterTopic:
+        Condition: AutoRegisterToDNS
+        Type: AWS::SNS::Topic
+        Properties:
+            DisplayName: Route53Registration
+            Subscription:
+                - Endpoint: !GetAtt ["LambdaRoute53Register", "Arn"]
+                  Protocol: lambda
+            Tags: 
+                - Key: Name
+                  Value: Route53Registration
+                - Key: CloudFormation
+                  Value: !Ref AWS::StackName
+                - Key: LaunchRegion
+                  Value: !Ref AWS::Region
+                - Key: Description
+                  Value: "The SNS Topic that is used to trigger the Lambda that will register the ec2 instance to route53."
+            TopicName: Route53Registration
+    LambdaRoute53Register:
+        Condition: AutoRegisterToDNS
+        Type: AWS::Lambda::Function
+        Properties:
+            Runtime: python3.6
+            Handler: index.handler
+            Role: !GetAtt ["LambdaRoute53Role", "Arn"]
+            Timeout: 60
+            Environment:
+                Variables:
+                    HostedZoneId: !Ref Route53HostedZoneToUpdate
+                    DNSRecord: !Ref Route53RecordNameToUpdate
+                    ASGName: "unity-server-asg"
+            Code:
+                ZipFile: |
+                    import boto3
+                    import json
+                    import time
+                    import os
+
+                    def handler(event, context):
+                        # Extract the new instance from the sns event message
+                        json_data = json.loads(event["Records"][0]["Sns"]["Message"])
+                        instance_id = json_data["EC2InstanceId"]
+
+                        # Get data from the newly spun up instance
+                        response = boto3.client('ec2').describe_instances(
+                            InstanceIds=[ instance_id ]
+                        )
+
+                        # Extract the public ip from the running instance
+                        print("Extracting IP address from event...");
+                        if "PublicIpAddress" not in response["Reservations"][0]["Instances"][0]:
+                            print("Public IP address not assigned yet, waiting...");
+                            time.sleep(5)
+                            while "PublicIpAddress" not in response["Reservations"][0]["Instances"][0]:
+                                response = boto3.client('ec2').describe_instances(
+                                    InstanceIds=[ instance_id ]
+                                )
+                            ipaddress = response["Reservations"][0]["Instances"][0]["PublicIpAddress"]
+                        else:
+                            ipaddress = response["Reservations"][0]["Instances"][0]["PublicIpAddress"]
+
+                        # Update the DNS record to point to the extract public ip address of the new instance
+                        print("IP address retrieved, updating DNS entry with found ip...");
+                        response = boto3.client('route53').change_resource_record_sets(
+                            HostedZoneId=os.environ["HostedZoneId"],
+                            ChangeBatch={
+                                "Comment": "Automatic DNS update",
+                                "Changes": [
+                                    {
+                                        "Action": "UPSERT",
+                                        "ResourceRecordSet": {
+                                            "Name": os.environ["DNSRecord"],
+                                            "Type": "A",
+                                            "TTL": 30,
+                                            "ResourceRecords": [
+                                                {
+                                                    "Value": ipaddress
+                                                },
+                                            ],
+                                        }
+                                    },
+                                ]
+                            }
+                        )
+                        print("Success!");
+    LambdaInvokePermission: 
+        Type: AWS::Lambda::Permission
+        Properties: 
+            Action: lambda:InvokeFunction
+            Principal: sns.amazonaws.com
+            SourceArn:  !Ref SNSRoute53RegisterTopic
+            FunctionName: !Ref LambdaRoute53Register
+    Route53RegistratorLogGroup:
+        Type: AWS::Logs::LogGroup
+        Properties: 
+            LogGroupName: !Join ["", ["/aws/lambda/", !Ref LambdaRoute53Register]]
+            RetentionInDays: 7
+
+Outputs:
+    EC2ServerRoleArn:
+        Value: !GetAtt ["EC2ServerRole", "Arn"]
+        Description: "The ARN of the generated EC2 Server Role."
+    S3BucketNameArn:
+        Value: !Ref ServerBucket
+        Description: "The ARN of the generated S3 bucket that the EC2 server will pull from."
+    SelectedAMI:
+        Value: !Ref AL2AMI
+        Description: "The AMI ID that is being used for this cluster."
+    EC2SecurityGroupId:
+        Value: !Ref EC2ServerSecurityGroup
+        Description: "The ID of the security group that is attached to each EC2 server that is launched."

@@ -1,0 +1,19 @@
+version: '3.1'
+
+services:
+
+  certbot-container-prod:
+    container_name: 'certbot-prod-container'
+    image: certbot/certbot:latest
+    volumes:
+      - ./letsencrypt-site:/data/letsencrypt
+      - ../ProdSetup/certs/etc/letsencrypt:/etc/letsencrypt
+      - ../ProdSetup/certs/var/lib/letsencrypt:/var/lib/letsencrypt
+      - ../ProdSetup/certs/var/log/letsencrypt:/var/log/letsencrypt
+    command: certificates
+    networks:
+      - docker-network
+
+networks:
+  docker-network:
+    driver: bridge

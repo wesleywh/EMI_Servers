@@ -1,0 +1,19 @@
+version: '3.1'
+
+services:
+
+  certbot-container:
+    container_name: 'certbot-container'
+    image: certbot/certbot:latest
+    volumes:
+      - ./letsencrypt-site:/data/letsencrypt
+      - ../ProdSetup/certs/etc/letsencrypt:/etc/letsencrypt
+      - ../ProdSetup/certs/var/lib/letsencrypt:/var/lib/letsencrypt
+      - ../ProdSetup/certs/var/log/letsencrypt:/var/log/letsencrypt
+    command: certonly --webroot --register-unsafely-without-email --agree-tos --webroot-path=/data/letsencrypt --staging -d <domain_name>
+    networks:
+      - docker-network
+
+networks:
+  docker-network:
+    driver: bridge

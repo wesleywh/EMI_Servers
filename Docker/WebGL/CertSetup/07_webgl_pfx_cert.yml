@@ -1,0 +1,17 @@
+version: '3.1'
+
+services:
+
+  pfx-generator:
+    container_name: 'pfx_generator'
+    image: alpine/openssl
+    volumes:
+      - ../ProdSetup/certs/etc/letsencrypt/archive/<domain_name>/:/apps
+      - ../ProdSetup/certs/webgl:/webgl
+    command: "pkcs12 -password pass: -export -out /webgl/cert.pfx -inkey /apps/privkey1.pem -in /apps/cert1.pem -certfile /apps/chain1.pem"
+    networks:
+      - docker-network
+
+networks:
+  docker-network:
+    driver: bridge

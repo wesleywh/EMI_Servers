@@ -1,0 +1,16 @@
+version: '3.1'
+services:
+  unity-webgl:
+    container_name: 'unity-webgl'
+    image: ubuntu:21.10
+    ports:
+      - "7778:7778" # Unity WebGL Default Port
+    volumes:
+      - ./unity_server:/unity_server
+      - ./certs/webgl/cert.pfx:/unity_server/cert.pfx
+      - ./certs/webgl/cert.json:/unity_server/cert.json
+    command: /unity_server/Server.x86_64 -batchmode -nographics || echo "Failed to start unity server!"
+
+networks:
+  docker-network:
+    driver: bridge

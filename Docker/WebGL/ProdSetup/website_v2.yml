@@ -1,0 +1,20 @@
+version: '3.1'
+services:
+  production-website:
+    container_name: 'production-website'
+    image: nginx:latest
+    ports:
+      - "80:80"     # HTTP Port for website
+      - "443:443"   # HTTPS Port for website
+    environment:
+      - UNITYEXE=Server.x86_64
+    volumes:
+      - ./production.conf:/etc/nginx/conf.d/default.conf
+      - ./website:/usr/share/nginx/html
+      - ./dh-param/dhparam-2048.pem:/etc/ssl/certs/dhparam-2048.pem
+      - ./certs/etc/letsencrypt/archive/<domain_name>/fullchain1.pem:/etc/letsencrypt/live/<domain_name>/fullchain.pem
+      - ./certs/etc/letsencrypt/archive/<domain_name>/privkey1.pem:/etc/letsencrypt/live/<domain_name>/privkey.pem
+
+networks:
+  docker-network:
+    driver: bridge

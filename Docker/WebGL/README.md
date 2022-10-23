@@ -63,11 +63,7 @@ Now we can stop the setup container and start the production docker that will ha
 ```
 docker compose -f 01_basic_nginx_website.yml down
 cd ../ProdSetup
-docker compose up -d
-```
-On `Windows` you might come across this error: `The file cannot be accessed by the system.` when attempting to run the above command. To fixed this dreaded error simply run the `v2` of the file that I have prepared:
-```
-docker compose -f docker-compose_v2.yml up -d
+docker compose -f website_v2.yml up
 ```
 
 Then you can cleanup your system from the leftover dockers by running:

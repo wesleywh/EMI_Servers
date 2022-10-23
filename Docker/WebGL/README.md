@@ -1,7 +1,7 @@
 # The following expects you to follow it in order
-Before starting anything be sure to do a global find and replace on the following:
-`<domain_name>` -> your actual domain name, ex: `mysweetdomain.com`
-`<email_address>` -> The email address you will register with letsencrypt, example `myemail@gmail.com`
+Before starting anything be sure to do a global find and replace on the following:<br/>
+`<domain_name>` -> your actual domain name, ex: `mysweetdomain.com`<br/>
+`<email_address>` -> The email address you will register with letsencrypt, example `myemail@gmail.com`<br/>
 
 ## Generate LetsEncrypt Certificates
 1. Run:
